@@ -99,26 +99,43 @@ func StartWorker(ctx context.Context, cfg Config) {
 }
 
 func sendTelegramAlert(cfg Config, errReport CustomError) error {
+	// 1. Indikator Warna/Emoji berdasarkan Tingkat Keparahan (Severity)
 	emoji := "⚠️"
+	headerColor := "🟡 WARNING"
+
 	switch errReport.Severity {
 	case "critical":
 		emoji = "🚨"
-	case "danger":
+		headerColor = "🔴 CRITICAL ALERT"
+	case "danger", "error":
 		emoji = "🔥"
+		headerColor = "❌ ERROR DETECTED"
 	case "info":
 		emoji = "ℹ️"
+		headerColor = "🔵 INFO LOG"
 	}
 
+	// 2. Desain Layout Pesan Menggunakan Fitur HTML Telegram
+	// Menggunakan <pre><code> untuk blockquote kode agar mudah di-copy di HP
 	message := fmt.Sprintf(
-		"%s *\\[%s\\] %s*\n"+
-			"*Severity:* `%s` | *Type:* `%s`\n\n"+
-			"*Description:*\n%s\n\n"+
-			"*Location:* `%s:%d`\n"+
-			"*Function:* `%s`\n"+
-			"*Raw Error:* `%s`\n\n"+
-			"⏰ _%s_",
-		emoji, errReport.Environment, errReport.Service,
-		errReport.Severity, errReport.ErrorType,
+		"%s <b>%s</b>\n"+
+			"----------------------------------------\n"+
+			"<b>🌐 Environment:</b> #%s\n"+
+			"<b>🏗️ Service:</b> <code>%s</code>\n"+
+			"<b>🏷️ Error Type:</b> <code>%s</code>\n"+
+			"----------------------------------------\n\n"+
+			"<b>📝 Description:</b>\n"+
+			"<blockquote>%s</blockquote>\n\n"+
+			"<b>📍 Location:</b>\n"+
+			"<code>%s:%d</code>\n"+
+			"▶️ <i>func %s()</i>\n\n"+
+			"<b>💥 Raw Error Detail:</b>\n"+
+			"<pre><code class=\"language-go\">%s</code></pre>\n\n"+
+			"⏰ <i>Reported at: %s</i>",
+		emoji, headerColor,
+		errReport.Environment,
+		errReport.Service,
+		errReport.ErrorType,
 		errReport.Description,
 		errReport.File, errReport.Line,
 		errReport.Function,
@@ -129,7 +146,7 @@ func sendTelegramAlert(cfg Config, errReport CustomError) error {
 	telegramPayload := map[string]string{
 		"chat_id":    cfg.TargetChatID,
 		"text":       message,
-		"parse_mode": "Markdown",
+		"parse_mode": "HTML",
 	}
 
 	jsonValue, err := json.Marshal(telegramPayload)
@@ -148,6 +165,6 @@ func sendTelegramAlert(cfg Config, errReport CustomError) error {
 		return fmt.Errorf("telegram API returned status %d", resp.StatusCode)
 	}
 
-	log.Printf("[TeleForwarder] Forwarded alert [%s] to Telegram", errReport.ErrorType)
+	log.Printf("[TeleForwarder] Beautiful alert [%s] sent to Telegram", errReport.ErrorType)
 	return nil
 }
