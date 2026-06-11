@@ -1,11 +1,9 @@
-```markdown
 # TeleForwarder
 
 `teleforwarder` is a lightweight, concurrent, and robust Go package designed to continuously consume structured error payloads from a Redis List queue and forward them as beautifully formatted HTML alerts to a designated Telegram chat or group.
 
 It features built-in **graceful shutdown** capabilities, prevents goroutine leaks via synchronization mechanisms, and optimizes network resource utilization using a reusable HTTP client.
 
----
 
 ## 🛠 Features
 
@@ -14,8 +12,6 @@ It features built-in **graceful shutdown** capabilities, prevents goroutine leak
 * **Graceful Shutdown Support:** Leverages `sync.WaitGroup` and Go `context.Context` to guarantee that in-flight Telegram HTTP requests finish processing completely before the application stops.
 * **Beautiful HTML Layouts:** Dynamically formats Telegram alerts with customized emojis and typography depending on the log's severity layer (`critical`, `error`/`danger`, `info`, `warning`).
 
----
-
 ## 📋 Prerequisites
 
 * Go `1.21` or higher.
@@ -23,7 +19,6 @@ It features built-in **graceful shutdown** capabilities, prevents goroutine leak
 * A Telegram Bot Token (generated via `@BotFather`).
 * A target Telegram Chat/Group ID (Make sure the bot has been added to the group as an Administrator).
 
----
 
 ## 📦 Installation
 
@@ -33,8 +28,6 @@ To import this package into your project, run:
 go get [github.com/learncodexx/teleforwarder](https://github.com/learncodexx/teleforwarder)
 
 ```
-
----
 
 ## 🚀 Usage Guide
 
