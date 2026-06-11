@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -50,47 +52,78 @@ type CustomError struct {
 //
 // Example:
 //
-//	func main() {
-//	    rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+//	 func main() {
+//	     rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
 //
-//	    cfg := teleforwarder.Config{
-//	        RedisClient:  rdb,
-//	        QueueName:    "service-alerts",
-//	        BotToken:     "123456:ABC-DEF",
-//	        TargetChatID: "-100123456789",
-//	    }
+//	     cfg := teleforwarder.Config{
+//	         RedisClient:  rdb,
+//	         QueueName:    "service-alerts",
+//	         BotToken:     "123456:ABC-DEF",
+//	         TargetChatID: "-100123456789",
+//	     }
 //
-//	    // This call is blocking; run inside a goroutine if needed
-//	    teleforwarder.StartWorker(context.Background(), cfg)
-//	}
+//	     // This call is blocking; run inside a goroutine if needed
+//	     teleforwarder.StartWorker(context.Background(), cfg)
+//	 }
 func StartWorker(ctx context.Context, cfg Config) {
 	log.Println("🤖 TeleForwarder Worker is running, listening to queue:", cfg.QueueName)
+
+	// Menggunakan WaitGroup untuk memastikan semua kiriman Telegram selesai sebelum worker benar-benar mati
+	var wg sync.WaitGroup
+
+	// Buat HTTP Client yang reusable agar menghemat resource network dan jandshake TCP
+	httpClient := &http.Client{
+		Timeout: 10 * time.Second,
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
-			log.Println("Stopping TeleForwarder worker...")
+			log.Println("🔄 Context canceled, waiting for remaining Telegram alerts to finish sending...")
+			wg.Wait() // Menunggu semua goroutine pengiriman Telegram selesai
+			log.Println("🛑 TeleForwarder worker stopped cleanly.")
 			return
+
 		default:
-			// Membaca data dari Redis List (Blocking Pop)
-			results, err := cfg.RedisClient.BLPop(ctx, 0, cfg.QueueName).Result()
+			// Membaca data dari Redis List dengan blocking timeout 5 detik.
+			// Timeout berkala memberi kesempatan bagi loop untuk mengecek case <-ctx.Done() saat antrean sepi.
+			results, err := cfg.RedisClient.BLPop(ctx, 5*time.Second, cfg.QueueName).Result()
 			if err != nil {
+				// Jika error dikarenakan shutdown aplikasi (context canceled), langsung skip ke iterasi berikutnya
+				if errors.Is(err, context.Canceled) || errors.Is(err, redis.Nil) {
+					// redis.Nil artinya tidak ada data baru selama 5 detik, aman untuk lanjut loop
+					continue
+				}
+
 				log.Printf("[TeleForwarder] Error reading from Redis: %v. Retrying in 2s...", err)
-				time.Sleep(2 * time.Second)
+
+				// Sleep yang aman: jika ditengah-tengah sleep ada perintah shutdown, program bisa langsung merespon
+				select {
+				case <-ctx.Done():
+					continue
+				case <-time.After(2 * time.Second):
+					continue
+				}
+			}
+
+			if len(results) < 2 {
 				continue
 			}
 
 			jsonPayload := results[1]
 
-			// Proses pengiriman ke Telegram menggunakan Goroutine agar tidak blocking antrean selanjutnya
+			// Tambah counter WaitGroup sebelum goroutine dijalankan
+			wg.Add(1)
 			go func(payload string) {
+				defer wg.Done() // Kurangi counter setelah goroutine selesai diproses
+
 				var customErr CustomError
 				if err := json.Unmarshal([]byte(payload), &customErr); err != nil {
 					log.Printf("[TeleForwarder] Failed to unmarshal log: %v", err)
 					return
 				}
 
-				if err := sendTelegramAlert(cfg, customErr); err != nil {
+				if err := sendTelegramAlert(httpClient, cfg, customErr); err != nil {
 					log.Printf("[TeleForwarder] Failed to send Telegram alert: %v", err)
 				}
 			}(jsonPayload)
@@ -98,7 +131,7 @@ func StartWorker(ctx context.Context, cfg Config) {
 	}
 }
 
-func sendTelegramAlert(cfg Config, errReport CustomError) error {
+func sendTelegramAlert(client *http.Client, cfg Config, errReport CustomError) error {
 	// 1. Indikator Warna/Emoji berdasarkan Tingkat Keparahan (Severity)
 	emoji := "⚠️"
 	headerColor := "🟡 WARNING"
@@ -155,7 +188,15 @@ func sendTelegramAlert(cfg Config, errReport CustomError) error {
 	}
 
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", cfg.BotToken)
-	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonValue))
+
+	// Gunakan NewRequest dengan context bawaan http client agar mematuhi aturan timeout
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonValue))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
